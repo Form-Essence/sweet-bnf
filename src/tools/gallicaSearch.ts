@@ -75,11 +75,11 @@ export function createSearchByAuthorTool(searchApi: SearchAPI) {
       properties: {
         author: {
           type: 'string',
-          description: 'The author name to search for',
+          description: 'The author name to search for. Gallica stores names as "Surname, Forename" (e.g. "Hugo, Victor")',
         },
         exact_match: {
           type: 'boolean',
-          description: 'If true, search for the exact author name; otherwise, search for author containing the words',
+          description: 'If true, match the words as an exact phrase, so use the "Surname, Forename" order ("Hugo, Victor"); "Victor Hugo" with exact_match only finds names written in that order. Otherwise, match all words in any order',
           default: false,
         },
         max_results: {
