@@ -66,7 +66,14 @@ export class SearchAPI {
       throw error;
     }
     logger.debug(`[SEARCH] Received XML response, length: ${xmlBody.length} bytes`);
-    const result = this.parseSruResponse(xmlBody, query);
+    let result: SearchResult;
+    try {
+      result = this.parseSruResponse(xmlBody, query);
+    } catch (error) {
+      // An SRU error report arrives as HTTP 200; don't keep serving it from the cache
+      this.httpClient.invalidate(this.sruUrl, params);
+      throw error;
+    }
     logger.info(`[SEARCH] Search completed: ${result.records.length} records returned out of ${result.metadata.total_records} total`);
     return result;
   }
@@ -104,14 +111,30 @@ export class SearchAPI {
     const diagnostics = sruResponse['srw:diagnostics'] || sruResponse.diagnostics;
     if (diagnostics) {
       const list = diagnostics['diag:diagnostic'] || diagnostics['srw:diagnostic'] || diagnostics.diagnostic;
-      const messages = (Array.isArray(list) ? list : [list])
-        .filter(Boolean)
+      const entries = (Array.isArray(list) ? list : [list]).filter(Boolean) as Array<Record<string, unknown>>;
+      const messages = entries
         .map((d: Record<string, unknown>) =>
           [d['diag:message'] ?? d['srw:message'] ?? d.message, d['diag:details'] ?? d['srw:details'] ?? d.details]
             .filter((part) => part !== undefined && part !== '')
             .join(': ')
         )
         .filter((m: string) => m.length > 0);
+      const uris = entries.map((d) => String(d['diag:uri'] ?? d['srw:uri'] ?? d.uri ?? ''));
+      // SRU diagnostics 1/1 and 1/2 are system errors; Gallica reports its own search
+      // backend failures (often on broad "gallica all" queries under load) as "Unable to identify error"
+      if (
+        uris.some((uri) => /\/diagnostic\/1\/[12]$/.test(uri)) ||
+        messages.some((m: string) => /unable to identify error/i.test(m))
+      ) {
+        throw new GallicaError(
+          'unavailable',
+          `Gallica's search engine failed while running ${query} (${messages.join('; ') || 'system error'}). ` +
+            'This is a failure on Gallica\'s side, not a problem with the query; it is common for broad ' +
+            '"gallica all" full-text searches when Gallica is under load. Try again later, or search a ' +
+            'specific field such as dc.title or dc.subject, which is faster.',
+          this.sruUrl
+        );
+      }
       throw new GallicaError(
         'bad_request',
         `Gallica could not run the search query ${query}: ${messages.join('; ') || 'unspecified SRU diagnostic'}`,

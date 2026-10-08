@@ -21,11 +21,12 @@ export type GallicaErrorKind =
   | 'network'
   | 'timeout';
 
+// Timeouts are not retried: a query that ran for the whole timeout is unlikely to be
+// faster a second time, and repeating it only adds load on Gallica
 const RETRYABLE_KINDS: ReadonlySet<GallicaErrorKind> = new Set([
   'unavailable',
   'rate_limited',
   'network',
-  'timeout',
 ]);
 
 /**
@@ -274,16 +275,7 @@ export class HttpClient {
    * rejects with a GallicaError.
    */
   async get(url: string, params?: Record<string, string | number>): Promise<HttpResponse> {
-    // If url is already absolute, use it directly; otherwise resolve against baseUrl
-    const fullUrl = url.startsWith('http://') || url.startsWith('https://')
-      ? new URL(url)
-      : new URL(url, this.baseUrl);
-    if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        fullUrl.searchParams.set(key, String(value));
-      }
-    }
-    const key = fullUrl.toString();
+    const key = this.buildUrl(url, params);
 
     // Identical concurrent requests share one fetch (e.g. the same manifest for details and pages)
     const cached = this.cache.get(key);
@@ -303,6 +295,26 @@ export class HttpClient {
       if (this.cache.get(key) === entry) this.cache.delete(key);
     });
     return response;
+  }
+
+  /**
+   * Drop a cached response, e.g. a 200 whose body turned out to be an error report
+   */
+  invalidate(url: string, params?: Record<string, string | number>): void {
+    this.cache.delete(this.buildUrl(url, params));
+  }
+
+  private buildUrl(url: string, params?: Record<string, string | number>): string {
+    // If url is already absolute, use it directly; otherwise resolve against baseUrl
+    const fullUrl = url.startsWith('http://') || url.startsWith('https://')
+      ? new URL(url)
+      : new URL(url, this.baseUrl);
+    if (params) {
+      for (const [key, value] of Object.entries(params)) {
+        fullUrl.searchParams.set(key, String(value));
+      }
+    }
+    return fullUrl.toString();
   }
 
   private async fetchWithRetry(url: string): Promise<HttpResponse> {

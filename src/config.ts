@@ -25,9 +25,10 @@ const DEFAULT_CONFIG: Config = {
   gallicaBaseUrl: 'https://gallica.bnf.fr',
   gallicaSruUrl: 'https://gallica.bnf.fr/SRU',
   logLevel: 'debug', // Default to debug for verbose output
-  httpTimeout: 20000,
+  // Gallica search regularly takes 10-30s from Vercel, so allow one long attempt
+  httpTimeout: 45000,
   httpRetries: 1,
-  httpDeadline: 45000,
+  httpDeadline: 55000,
   minRequestInterval: 1000,
   cacheTtl: 10 * 60 * 1000,
   defaultMaxRecords: 10,

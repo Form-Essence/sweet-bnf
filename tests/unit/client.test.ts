@@ -93,9 +93,10 @@ describe('HttpClient', () => {
     expect(requestFn.calls).toHaveLength(2);
   });
 
-  it('maps timeouts', async () => {
-    const { http } = client([{ error: { name: 'TimeoutError' } }], { retries: 0 });
+  it('maps timeouts and does not retry them', async () => {
+    const { http, requestFn } = client([{ error: { name: 'TimeoutError' } }], { retries: 1 });
     expect((await failure(http.get('/x'))).kind).toBe('timeout');
+    expect(requestFn.calls).toHaveLength(1);
   });
 
   it('caches successful responses and shares in-flight requests', async () => {

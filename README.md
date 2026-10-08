@@ -371,9 +371,9 @@ Generate research reports in a sequential, step-by-step manner.
 - `GALLICA_BASE_URL` - Base URL for Gallica API (default: `https://gallica.bnf.fr`)
 - `GALLICA_SRU_URL` - SRU search endpoint (default: `https://gallica.bnf.fr/SRU`)
 - `LOG_LEVEL` - Logging level: `error`, `warn`, `info`, `debug` (default: `info`)
-- `HTTP_TIMEOUT` - Timeout per HTTP attempt in milliseconds (default: 20000)
-- `HTTP_RETRIES` - Retries for transient failures only: network errors, timeouts, 429, 502-504 (default: 1)
-- `HTTP_DEADLINE` - Total time budget per Gallica call, including queueing and retries, in ms (default: 45000)
+- `HTTP_TIMEOUT` - Timeout per HTTP attempt in milliseconds (default: 45000)
+- `HTTP_RETRIES` - Retries for transient failures only: network errors, 429, 502-504 (default: 1)
+- `HTTP_DEADLINE` - Total time budget per Gallica call, including queueing and retries, in ms (default: 55000)
 - `GALLICA_MIN_INTERVAL_MS` - Minimum spacing between requests to Gallica; requests are sent one at a time (default: 1000)
 - `GALLICA_CACHE_TTL_MS` - How long successful Gallica responses are cached in memory (default: 600000)
 

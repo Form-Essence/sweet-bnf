@@ -99,6 +99,26 @@ describe('SearchAPI', () => {
       await expect(api.advancedSearch('dc.foo all bar')).rejects.toThrow(/Unsupported index: dc\.foo/);
     });
 
+    it('reports Gallica search-engine failures as temporary, not as bad queries, and does not cache them', async () => {
+      const failure = SRU_DIAGNOSTIC.replace('info:srw/diagnostic/1/16', 'info:srw/diagnostic/1/1')
+        .replace('Unsupported index', 'Unable to identify error')
+        .replace('dc.foo', 'Unable to identify error');
+      const requestFn = fakeRequest([
+        { status: 200, body: failure },
+        { status: 200, body: SRU_RESPONSE },
+      ]);
+      const http = new HttpClient('https://gallica.bnf.fr', { requestFn, minRequestInterval: 0, cacheTtl: 60000 });
+      const api = new SearchAPI(http, 'https://gallica.bnf.fr/SRU');
+
+      const error = await api.naturalLanguageSearch('Commune de Paris').catch((e) => e);
+      expect(error.kind).toBe('unavailable');
+      expect(error.message).toMatch(/not a problem with the query/);
+
+      const retry = await api.naturalLanguageSearch('Commune de Paris');
+      expect(retry.records).toHaveLength(1);
+      expect(requestFn.calls).toHaveLength(2);
+    });
+
     it('explains Gallica 500s as malformed queries rather than outages', async () => {
       const { api, requestFn } = searchApi([{ status: 500, body: '<html>500</html>' }]);
       const error = await api.advancedSearch('dc.foo all bar').catch((e) => e);
