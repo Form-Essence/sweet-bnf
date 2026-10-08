@@ -8,6 +8,11 @@ export interface Config {
   logLevel: 'error' | 'warn' | 'info' | 'debug';
   httpTimeout: number;
   httpRetries: number;
+  /** Total time budget for one Gallica call, including queueing and retries */
+  httpDeadline: number;
+  /** Minimum spacing between requests to Gallica (Gallica bans IPs that send bursts) */
+  minRequestInterval: number;
+  cacheTtl: number;
   defaultMaxRecords: number;
   defaultStartRecord: number;
   iconUrl?: string;
@@ -20,8 +25,11 @@ const DEFAULT_CONFIG: Config = {
   gallicaBaseUrl: 'https://gallica.bnf.fr',
   gallicaSruUrl: 'https://gallica.bnf.fr/SRU',
   logLevel: 'debug', // Default to debug for verbose output
-  httpTimeout: 30000,
-  httpRetries: 3,
+  httpTimeout: 20000,
+  httpRetries: 1,
+  httpDeadline: 45000,
+  minRequestInterval: 1000,
+  cacheTtl: 10 * 60 * 1000,
   defaultMaxRecords: 10,
   defaultStartRecord: 1,
 };
@@ -41,6 +49,12 @@ export function loadConfig(): Config {
     logLevel,
     httpTimeout: parseInt(process.env.HTTP_TIMEOUT || String(DEFAULT_CONFIG.httpTimeout), 10),
     httpRetries: parseInt(process.env.HTTP_RETRIES || String(DEFAULT_CONFIG.httpRetries), 10),
+    httpDeadline: parseInt(process.env.HTTP_DEADLINE || String(DEFAULT_CONFIG.httpDeadline), 10),
+    minRequestInterval: parseInt(
+      process.env.GALLICA_MIN_INTERVAL_MS || String(DEFAULT_CONFIG.minRequestInterval),
+      10
+    ),
+    cacheTtl: parseInt(process.env.GALLICA_CACHE_TTL_MS || String(DEFAULT_CONFIG.cacheTtl), 10),
     defaultMaxRecords: parseInt(
       process.env.DEFAULT_MAX_RECORDS || String(DEFAULT_CONFIG.defaultMaxRecords),
       10

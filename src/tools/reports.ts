@@ -4,6 +4,7 @@
 
 import { z } from 'zod';
 import { SequentialReportingServer } from '../gallica/sequential_reporting.js';
+import { boolArg, intArg } from './schemas.js';
 
 /**
  * Sequential reporting tool matching Python implementation
@@ -98,17 +99,17 @@ Parameters:
       // Use a more flexible schema that allows partial validation
       const schema = z.object({
         topic: z.string().optional(),
-        page_count: z.number().int().positive().optional(),
-        source_count: z.number().int().positive().optional(),
-        search_sources: z.boolean().optional(),
-        section_number: z.number().int().positive().optional(),
-        total_sections: z.number().int().positive().optional(),
+        page_count: intArg().positive().optional(),
+        source_count: intArg().positive().optional(),
+        search_sources: boolArg().optional(),
+        section_number: intArg().positive().optional(),
+        total_sections: intArg().positive().optional(),
         title: z.string().optional(),
         content: z.string().optional(),
-        is_bibliography: z.boolean().optional(),
-        sources_used: z.array(z.number().int()).optional(),
-        next_section_needed: z.boolean().optional(),
-        include_graphics: z.boolean().optional(),
+        is_bibliography: boolArg().optional(),
+        sources_used: z.array(intArg()).optional(),
+        next_section_needed: boolArg().optional(),
+        include_graphics: boolArg().optional(),
       });
 
       const parsed = schema.parse(args);

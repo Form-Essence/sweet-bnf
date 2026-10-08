@@ -126,48 +126,44 @@ export class SequentialReportingServer {
    * Search for sources - matches Python search_sources
    */
   async searchSources(topic: string, sourceCount: number = DEFAULT_SOURCE_COUNT): Promise<Source[]> {
-    try {
-      // Try natural language search first
-      const results = await this.searchApi.naturalLanguageSearch(topic, sourceCount);
+    // Errors propagate so the caller reports why no sources were found
+    // Try natural language search first
+    const results = await this.searchApi.naturalLanguageSearch(topic, sourceCount);
 
-      // If not enough results, try subject search
-      let allRecords = results.records || [];
-      if (allRecords.length < sourceCount) {
-        const subjectResults = await this.searchApi.searchBySubject(
-          topic,
-          false,
-          sourceCount - allRecords.length
-        );
-        allRecords = [...allRecords, ...(subjectResults.records || [])];
-      }
-
-      // Format the results
-      const sources: Source[] = [];
-      const recordsToProcess = allRecords.slice(0, sourceCount);
-
-      for (let i = 0; i < recordsToProcess.length; i++) {
-        const result = recordsToProcess[i];
-        if (!result) continue;
-        
-        const source: Source = {
-          id: i + 1,
-          title: Array.isArray(result.title) ? (result.title[0] || 'Unknown Title') : (result.title || 'Unknown Title'),
-          creator: Array.isArray(result.creator) ? (result.creator[0] || 'Unknown Author') : (result.creator || 'Unknown Author'),
-          date: Array.isArray(result.date) ? (result.date[0] || 'Unknown Date') : (result.date || 'Unknown Date'),
-          type: Array.isArray(result.type) ? (result.type[0] || 'Unknown Type') : (result.type || 'Unknown Type'),
-          language: Array.isArray(result.language) ? (result.language[0] || 'Unknown Language') : (result.language || 'Unknown Language'),
-          url: result.gallica_url || '',
-          citation: this.formatCitation(result as Record<string, unknown>),
-          thumbnail: '',
-        };
-        sources.push(source);
-      }
-
-      return sources;
-    } catch (error) {
-      logger.error(`Error searching for sources: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+    // If not enough results, try subject search
+    let allRecords = results.records || [];
+    if (allRecords.length < sourceCount) {
+      const subjectResults = await this.searchApi.searchBySubject(
+        topic,
+        false,
+        sourceCount - allRecords.length
+      );
+      allRecords = [...allRecords, ...(subjectResults.records || [])];
     }
+
+    // Format the results
+    const sources: Source[] = [];
+    const recordsToProcess = allRecords.slice(0, sourceCount);
+
+    for (let i = 0; i < recordsToProcess.length; i++) {
+      const result = recordsToProcess[i];
+      if (!result) continue;
+      
+      const source: Source = {
+        id: i + 1,
+        title: Array.isArray(result.title) ? (result.title[0] || 'Unknown Title') : (result.title || 'Unknown Title'),
+        creator: Array.isArray(result.creator) ? (result.creator[0] || 'Unknown Author') : (result.creator || 'Unknown Author'),
+        date: Array.isArray(result.date) ? (result.date[0] || 'Unknown Date') : (result.date || 'Unknown Date'),
+        type: Array.isArray(result.type) ? (result.type[0] || 'Unknown Type') : (result.type || 'Unknown Type'),
+        language: Array.isArray(result.language) ? (result.language[0] || 'Unknown Language') : (result.language || 'Unknown Language'),
+        url: result.gallica_url || '',
+        citation: this.formatCitation(result as Record<string, unknown>),
+        thumbnail: '',
+      };
+      sources.push(source);
+    }
+
+    return sources;
   }
 
   /**

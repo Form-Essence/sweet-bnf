@@ -12,6 +12,8 @@ import { ItemsClient } from './gallica/items.js';
 import { SequentialReportingServer } from './gallica/sequential_reporting.js';
 import { config } from './config.js';
 import { logger } from './logging.js';
+import { ZodError } from 'zod';
+import { GallicaError } from './gallica/client.js';
 
 // Search tools
 import {
@@ -34,6 +36,64 @@ import {
 
 // Report tool
 import { createSequentialReportingTool } from './tools/reports.js';
+
+/**
+ * Thrown for JSON-RPC methods this server does not implement
+ */
+export class MethodNotFoundError extends Error {
+  readonly code = -32601;
+  constructor(method: string) {
+    super(`Method not found: ${method}`);
+    this.name = 'MethodNotFoundError';
+  }
+}
+
+type ToolResponse = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+
+/**
+ * Turn a tool failure into a message the model can act on. Tool errors are returned
+ * as results with isError (per MCP), not protocol errors, so the model sees why.
+ */
+export function toolErrorResponse(toolName: string, error: unknown): ToolResponse {
+  let text: string;
+  if (error instanceof ZodError) {
+    const issues = error.issues
+      .map((issue) => `${issue.path.join('.') || 'arguments'}: ${issue.message}`)
+      .join('; ');
+    text = `Invalid arguments for ${toolName}: ${issues}`;
+  } else if (error instanceof GallicaError) {
+    text = `Gallica request failed (${error.kind}${error.statusCode ? `, HTTP ${error.statusCode}` : ''}): ${error.message}`;
+  } else {
+    text = `Error in ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return { content: [{ type: 'text', text }], isError: true };
+}
+
+/**
+ * Wrap a tool handler's return value in an MCP tool response. Handlers that already
+ * build MCP content (sequential_reporting) are passed through instead of re-serialized.
+ */
+export function toToolResponse(result: unknown): ToolResponse {
+  if (
+    result &&
+    typeof result === 'object' &&
+    Array.isArray((result as { content?: unknown }).content)
+  ) {
+    const { content, isError } = result as { content: Array<{ text?: unknown }>; isError?: boolean };
+    return {
+      content: content.map((item) => ({ type: 'text' as const, text: String(item.text ?? '') })),
+      ...(isError ? { isError: true } : {}),
+    };
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+      },
+    ],
+  };
+}
 
 /**
  * Initialize and configure MCP server
@@ -134,7 +194,10 @@ export async function createMCPServer(): Promise<Server> {
       if (!tool) {
         logger.error(`[TOOL] Tool not found: ${request.params.name || 'unknown'}`);
         logger.info(`[TOOL] Available tools: ${tools.map(t => t.name).join(', ')}`);
-        throw new Error(`Tool not found: ${request.params.name || 'unknown'}`);
+        return toolErrorResponse(
+          request.params.name || 'unknown',
+          new Error(`Unknown tool. Available tools: ${tools.map((t) => t.name).join(', ')}`)
+        );
       }
 
       try {
@@ -142,24 +205,10 @@ export async function createMCPServer(): Promise<Server> {
         logger.debug(`[TOOL] Tool handler called with arguments:`, request.params.arguments);
         const result = await tool.handler(request.params.arguments);
         logger.info(`[TOOL] Tool ${tool.name} completed successfully`);
-        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-        logger.debug(`[TOOL] Tool result type: ${typeof result}, length: ${resultStr.length}`);
-        
-        const response = {
-          content: [
-            {
-              type: 'text',
-              text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-            },
-          ],
-        };
-        
-        logger.info(`[TOOL] Returning response for ${tool.name}`);
-        return response;
+        return toToolResponse(result);
       } catch (error) {
         logger.error(`[TOOL] Error in tool ${tool.name}:`, error instanceof Error ? error.message : String(error));
-        logger.error(`[TOOL] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
-        throw error;
+        return toolErrorResponse(tool.name, error);
       }
     }
   );
@@ -202,9 +251,11 @@ export async function handleRequestDirectly(
         ...(iconUrl ? { icon: iconUrl } : {}),
       },
     };
-  } else if (method === 'notifications/initialized') {
-    // Notification - no response needed (return null)
-    logger.info('[MCP] Received initialized notification');
+  } else if (method === 'ping') {
+    return {};
+  } else if (method.startsWith('notifications/')) {
+    // Notifications (initialized, cancelled, ...) get no response
+    logger.info(`[MCP] Received notification: ${method}`);
     return null;
   } else if (method === 'tools/list') {
     const handler = (server as any)._requestHandlers?.get('tools/list');
@@ -235,7 +286,7 @@ export async function handleRequestDirectly(
     }
     throw new Error('tools/call handler not found');
   } else {
-    throw new Error(`Unknown method: ${method}`);
+    throw new MethodNotFoundError(method);
   }
 }
 

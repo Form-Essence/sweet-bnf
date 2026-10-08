@@ -4,7 +4,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { createMCPServer, handleRequestDirectly } from './mcpServer.js';
+import { createMCPServer, handleRequestDirectly, MethodNotFoundError } from './mcpServer.js';
 import { logger } from './logging.js';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { readFile } from 'fs/promises';
@@ -193,6 +193,17 @@ export default async function handler(
               throw error;
             });
           } catch (error) {
+            if (error instanceof MethodNotFoundError) {
+              res.setHeader('Content-Type', 'application/json');
+              res.setHeader('Access-Control-Allow-Origin', '*');
+              res.writeHead(200);
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                id: request.id ?? null,
+                error: { code: error.code, message: error.message }
+              }));
+              return;
+            }
             logger.error(`[HTTP] Error in handleRequestDirectly:`, error instanceof Error ? error.message : String(error));
             logger.error(`[HTTP] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
             
@@ -217,9 +228,9 @@ export default async function handler(
           // Notifications don't need a response
           if (response === null) {
             res.setHeader('Access-Control-Allow-Origin', '*');
-            res.writeHead(204); // No Content
+            res.writeHead(202); // Accepted, as the MCP HTTP transport expects for notifications
             res.end();
-            logger.info('[HTTP] Sent 204 No Content for notification');
+            logger.info('[HTTP] Sent 202 Accepted for notification');
             return;
           }
           

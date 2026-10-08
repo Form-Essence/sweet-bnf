@@ -4,10 +4,18 @@
  */
 
 import { XMLParser } from 'fast-xml-parser';
-import { HttpClient } from './client.js';
+import { GallicaError, HttpClient } from './client.js';
 import { SearchResult } from './types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
+
+/**
+ * Quote a user-supplied value for CQL. Double quotes inside the value would end the
+ * term early and make Gallica reject the whole query, so they are dropped.
+ */
+export function cqlQuote(value: string): string {
+  return `"${value.replace(/"/g, ' ').replace(/\s+/g, ' ').trim()}"`;
+}
 
 /**
  * Search API matching Python SearchAPI class
@@ -38,137 +46,153 @@ export class SearchAPI {
       maximumRecords: String(Math.min(maxRecords, 50)), // Cap at 50 like Python
     };
 
+    logger.debug(`[SEARCH] Calling Gallica SRU API with params:`, params);
+    let xmlBody: string;
     try {
-      logger.debug(`[SEARCH] Calling Gallica SRU API with params:`, params);
-      const xmlBody = await this.httpClient.getXml(this.sruUrl, params);
-      logger.debug(`[SEARCH] Received XML response, length: ${xmlBody.length} bytes`);
-      const result = this.parseSruResponse(xmlBody, query);
-      logger.info(`[SEARCH] Search completed: ${result.records.length} records returned out of ${result.metadata.total_records} total`);
-      return result;
+      xmlBody = await this.httpClient.getXml(this.sruUrl, params);
     } catch (error) {
-      logger.error(`[SEARCH] Error during Gallica API request: ${error instanceof Error ? error.message : String(error)}`);
-      logger.error(`[SEARCH] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
-      return {
-        metadata: {
-          query,
-          total_records: '0',
-          records_returned: 0,
-          date_retrieved: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        },
-        records: [],
-        error: error instanceof Error ? error.message : String(error),
-        parameters: params,
-      };
+      if (error instanceof GallicaError && (error.kind === 'server_error' || error.kind === 'bad_request')) {
+        // Gallica answers HTTP 500 for malformed CQL, so explain that instead of reporting an outage
+        throw new GallicaError(
+          'bad_request',
+          `Gallica rejected the search query (HTTP ${error.statusCode}). This almost always means the CQL ` +
+            `query is malformed, not that Gallica is down. Query sent: ${query} — use indexes such as ` +
+            'dc.title, dc.creator, dc.subject, dc.date, dc.type, dc.language or gallica, the relations ' +
+            'all / any / adj, put multi-word values in double quotes, and combine clauses with and / or / not.',
+          error.url,
+          error.statusCode
+        );
+      }
+      throw error;
     }
+    logger.debug(`[SEARCH] Received XML response, length: ${xmlBody.length} bytes`);
+    const result = this.parseSruResponse(xmlBody, query);
+    logger.info(`[SEARCH] Search completed: ${result.records.length} records returned out of ${result.metadata.total_records} total`);
+    return result;
   }
 
   /**
    * Parse SRU XML response - matches Python parsing logic
    */
-  private parseSruResponse(xmlBody: string, query: string): SearchResult {
+  parseSruResponse(xmlBody: string, query: string): SearchResult {
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      textNodeName: '#text',
+      // Keep titles such as "1984" and dates such as "0012" as written
+      parseTagValue: false,
+      parseAttributeValue: false,
+    });
+
+    let result;
     try {
-      const parser = new XMLParser({
-        ignoreAttributes: false,
-        attributeNamePrefix: '@_',
-        textNodeName: '#text',
-        parseAttributeValue: true,
-      });
-
-      const result = parser.parse(xmlBody);
-
-      // Navigate through SRU response structure
-      const sruResponse = result['srw:searchRetrieveResponse'] || result.searchRetrieveResponse;
-      if (!sruResponse) {
-        throw new Error('Invalid SRU response structure');
-      }
-
-      const numberOfRecords = sruResponse['srw:numberOfRecords']?.['#text'] || 
-                              sruResponse.numberOfRecords?.['#text'] ||
-                              sruResponse['srw:numberOfRecords'] ||
-                              sruResponse.numberOfRecords ||
-                              '0';
-
-      const records = sruResponse['srw:records']?.['srw:record'] || 
-                     sruResponse.records?.record ||
-                     [];
-
-      const recordsArray = Array.isArray(records) ? records : records ? [records] : [];
-
-      const parsedRecords: Array<Record<string, string | string[] | undefined>> = [];
-
-      for (const record of recordsArray) {
-        const recordData = record['srw:recordData']?.['oai_dc:dc'] ||
-                          record.recordData?.['oai_dc:dc'] ||
-                          record['srw:recordData'] ||
-                          record.recordData;
-
-        if (!recordData) continue;
-
-        const recordDict: Record<string, string | string[] | undefined> = {};
-
-        // Extract Dublin Core fields
-        const dcFields = [
-          'title', 'creator', 'contributor', 'publisher', 'date',
-          'description', 'type', 'format', 'identifier', 'source',
-          'language', 'relation', 'coverage', 'rights', 'subject',
-        ];
-
-        for (const field of dcFields) {
-          const elements = recordData[`dc:${field}`] || recordData[field];
-          if (elements) {
-            const values = Array.isArray(elements) ? elements : [elements];
-            const textValues = values
-              .map((v: unknown) => {
-                if (typeof v === 'string') return v.trim();
-                if (v && typeof v === 'object' && '#text' in v) return String(v['#text']).trim();
-                return String(v).trim();
-              })
-              .filter((v: string) => v.length > 0);
-
-            if (textValues.length > 0) {
-              const value: string | string[] = textValues.length === 1 ? textValues[0]! : textValues;
-              recordDict[field] = value;
-            }
-          }
-        }
-
-        // Extract Gallica URL from identifiers
-        const identifiers = recordDict.identifier;
-        if (identifiers) {
-          const idArray = Array.isArray(identifiers) ? identifiers : [identifiers];
-          for (const identifier of idArray) {
-            if (typeof identifier === 'string' && identifier.includes('gallica.bnf.fr/ark:')) {
-              recordDict.gallica_url = identifier;
-              break;
-            }
-          }
-        }
-
-        parsedRecords.push(recordDict);
-      }
-
-      return {
-        metadata: {
-          query,
-          total_records: String(numberOfRecords),
-          records_returned: parsedRecords.length,
-          date_retrieved: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        },
-        records: parsedRecords,
-      };
+      result = parser.parse(xmlBody);
     } catch (error) {
-      logger.error(`Error parsing XML response: ${error instanceof Error ? error.message : String(error)}`);
-      return {
-        metadata: {
-          query,
-          total_records: '0',
-          records_returned: 0,
-          date_retrieved: new Date().toISOString().replace('T', ' ').substring(0, 19),
-        },
-        records: [],
-        error: `XML parsing error: ${error instanceof Error ? error.message : String(error)}`,
-      };
+      throw new GallicaError(
+        'server_error',
+        `Gallica returned a search response that is not valid XML: ${error instanceof Error ? error.message : String(error)}`,
+        this.sruUrl
+      );
     }
+
+    // Navigate through SRU response structure
+    const sruResponse = result['srw:searchRetrieveResponse'] || result.searchRetrieveResponse;
+    if (!sruResponse) {
+      throw new GallicaError('server_error', 'Gallica returned an unexpected search response (no SRU envelope).', this.sruUrl);
+    }
+
+    const diagnostics = sruResponse['srw:diagnostics'] || sruResponse.diagnostics;
+    if (diagnostics) {
+      const list = diagnostics['diag:diagnostic'] || diagnostics['srw:diagnostic'] || diagnostics.diagnostic;
+      const messages = (Array.isArray(list) ? list : [list])
+        .filter(Boolean)
+        .map((d: Record<string, unknown>) =>
+          [d['diag:message'] ?? d['srw:message'] ?? d.message, d['diag:details'] ?? d['srw:details'] ?? d.details]
+            .filter((part) => part !== undefined && part !== '')
+            .join(': ')
+        )
+        .filter((m: string) => m.length > 0);
+      throw new GallicaError(
+        'bad_request',
+        `Gallica could not run the search query ${query}: ${messages.join('; ') || 'unspecified SRU diagnostic'}`,
+        this.sruUrl
+      );
+    }
+
+    const numberOfRecords = sruResponse['srw:numberOfRecords']?.['#text'] || 
+                            sruResponse.numberOfRecords?.['#text'] ||
+                            sruResponse['srw:numberOfRecords'] ||
+                            sruResponse.numberOfRecords ||
+                            '0';
+
+    const records = sruResponse['srw:records']?.['srw:record'] || 
+                   sruResponse.records?.record ||
+                   [];
+
+    const recordsArray = Array.isArray(records) ? records : records ? [records] : [];
+
+    const parsedRecords: Array<Record<string, string | string[] | undefined>> = [];
+
+    for (const record of recordsArray) {
+      const recordData = record['srw:recordData']?.['oai_dc:dc'] ||
+                        record.recordData?.['oai_dc:dc'] ||
+                        record['srw:recordData'] ||
+                        record.recordData;
+
+      if (!recordData) continue;
+
+      const recordDict: Record<string, string | string[] | undefined> = {};
+
+      // Extract Dublin Core fields
+      const dcFields = [
+        'title', 'creator', 'contributor', 'publisher', 'date',
+        'description', 'type', 'format', 'identifier', 'source',
+        'language', 'relation', 'coverage', 'rights', 'subject',
+      ];
+
+      for (const field of dcFields) {
+        const elements = recordData[`dc:${field}`] || recordData[field];
+        if (elements) {
+          const values = Array.isArray(elements) ? elements : [elements];
+          const textValues = values
+            .map((v: unknown) => {
+              if (typeof v === 'string') return v.trim();
+              if (v && typeof v === 'object' && '#text' in v) return String(v['#text']).trim();
+              return String(v).trim();
+            })
+            .filter((v: string) => v.length > 0);
+
+          if (textValues.length > 0) {
+            const value: string | string[] = textValues.length === 1 ? textValues[0]! : textValues;
+            recordDict[field] = value;
+          }
+        }
+      }
+
+      // Extract Gallica URL from identifiers
+      const identifiers = recordDict.identifier;
+      if (identifiers) {
+        const idArray = Array.isArray(identifiers) ? identifiers : [identifiers];
+        for (const identifier of idArray) {
+          if (typeof identifier === 'string' && identifier.includes('gallica.bnf.fr/ark:')) {
+            recordDict.gallica_url = identifier;
+            break;
+          }
+        }
+      }
+
+      parsedRecords.push(recordDict);
+    }
+
+    return {
+      metadata: {
+        query,
+        total_records: String(numberOfRecords),
+        records_returned: parsedRecords.length,
+        date_retrieved: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      },
+      records: parsedRecords,
+    };
   }
 
   /**
@@ -180,7 +204,8 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const query = exactMatch ? `dc.title all "${title}"` : `dc.title all ${title}`;
+    // adj matches the words as a phrase; all matches them in any order
+    const query = `dc.title ${exactMatch ? 'adj' : 'all'} ${cqlQuote(title)}`;
     return this.search(query, startRecord, maxResults);
   }
 
@@ -193,7 +218,8 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const query = exactMatch ? `dc.creator all "${author}"` : `dc.creator all ${author}`;
+    // adj matches the words as a phrase; all matches them in any order
+    const query = `dc.creator ${exactMatch ? 'adj' : 'all'} ${cqlQuote(author)}`;
     return this.search(query, startRecord, maxResults);
   }
 
@@ -206,7 +232,8 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const query = exactMatch ? `dc.subject all "${subject}"` : `dc.subject all ${subject}`;
+    // adj matches the words as a phrase; all matches them in any order
+    const query = `dc.subject ${exactMatch ? 'adj' : 'all'} ${cqlQuote(subject)}`;
     return this.search(query, startRecord, maxResults);
   }
 
@@ -219,7 +246,7 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const query = `dc.date all "${date}"`;
+    const query = `dc.date all ${cqlQuote(date)}`;
     return this.search(query, startRecord, maxResults);
   }
 
@@ -231,7 +258,7 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const query = `dc.type all "${docType}"`;
+    const query = `dc.type all ${cqlQuote(docType)}`;
     return this.search(query, startRecord, maxResults);
   }
 
@@ -254,7 +281,7 @@ export class SearchAPI {
     maxResults: number = config.defaultMaxRecords,
     startRecord: number = config.defaultStartRecord
   ): Promise<SearchResult> {
-    const formattedQuery = `gallica all "${query}"`;
+    const formattedQuery = `gallica all ${cqlQuote(query)}`;
     return this.search(formattedQuery, startRecord, maxResults);
   }
 }

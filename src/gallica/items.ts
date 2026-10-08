@@ -6,7 +6,20 @@
 import { ItemMetadata, PageInfo } from './types.js';
 import { HttpClient } from './client.js';
 import { IIIFClient } from './iiif.js';
-import { logger } from '../logging.js';
+import { normalizeArk } from './ark.js';
+
+/**
+ * IIIF metadata values are strings, {"@value": ...} objects, or arrays of either
+ */
+function metadataValueToString(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map(metadataValueToString).filter((v) => v.length > 0).join('; ');
+  }
+  if (value && typeof value === 'object' && '@value' in value) {
+    return String((value as { '@value': unknown })['@value']);
+  }
+  return value === undefined || value === null ? '' : String(value);
+}
 
 /**
  * Items client for metadata and page access
@@ -24,47 +37,25 @@ export class ItemsClient {
    * Get full item metadata
    */
   async getItemMetadata(ark: string): Promise<ItemMetadata> {
-    // Extract ARK identifier
-    const arkId = ark.replace(/^ark:\/12148\//, '').replace(/^\/ark:\/12148\//, '');
-    const fullArk = `ark:/12148/${arkId}`;
-    const gallicaUrl = `${this.baseUrl}/ark:/12148/${arkId}`;
+    const arkId = normalizeArk(ark);
+    const manifest = await this.iiifClient.parseManifest(arkId);
+    const metadata = (manifest.metadata as Record<string, unknown>) || {};
 
-    try {
-      // Try to get metadata from IIIF manifest first
-      if (!ark) {
-        throw new Error('ARK is required');
-      }
-      const manifest = await this.iiifClient.parseManifest(ark);
-      
-      // Extract metadata from manifest if available
-      const metadata = manifest.metadata as Record<string, unknown> || {};
-      
-      // Build metadata object
-      const itemMetadata: ItemMetadata = {
-        ark: fullArk,
-        gallica_url: gallicaUrl,
-        manifest_url: this.iiifClient.getManifestUrl(ark),
-        available_formats: ['iiif', 'image'],
-        ...this.extractMetadataFromManifest(metadata),
-      };
+    const itemMetadata: ItemMetadata = {
+      ark: `ark:/12148/${arkId}`,
+      gallica_url: `${this.baseUrl}/ark:/12148/${arkId}`,
+      manifest_url: this.iiifClient.getManifestUrl(arkId),
+      available_formats: ['iiif', 'image'],
+      page_count: manifest.pages.length,
+      ...this.extractMetadataFromManifest(metadata),
+    };
 
-      // Check if text is available
-      if (manifest.pages.length > 0 && manifest.pages[0]?.has_text) {
-        itemMetadata.available_formats.push('text', 'alto');
-      }
-
-      return itemMetadata;
-    } catch (error) {
-      logger.warn(`Could not fetch full metadata for ${ark}, returning basic info: ${error instanceof Error ? error.message : String(error)}`);
-      
-      // Return basic metadata
-      return {
-        ark: fullArk,
-        gallica_url: gallicaUrl,
-        manifest_url: this.iiifClient.getManifestUrl(ark),
-        available_formats: ['iiif', 'image'],
-      };
+    // Check if text is available
+    if (manifest.pages.length > 0 && manifest.pages[0]?.has_text) {
+      itemMetadata.available_formats.push('text', 'alto');
     }
+
+    return itemMetadata;
   }
 
   /**
@@ -77,22 +68,22 @@ export class ItemsClient {
       for (const item of metadata) {
         if (item && typeof item === 'object' && 'label' in item && 'value' in item) {
           const label = String(item.label || '');
-          const value = item.value;
+          const value = metadataValueToString(item.value);
           
           if (label.toLowerCase().includes('title')) {
-            result.title = String(value);
+            result.title = value;
           } else if (label.toLowerCase().includes('creator') || label.toLowerCase().includes('author')) {
-            result.creator = String(value);
+            result.creator = value;
           } else if (label.toLowerCase().includes('date')) {
-            result.date = String(value);
+            result.date = value;
           } else if (label.toLowerCase().includes('publisher')) {
-            result.publisher = String(value);
+            result.publisher = value;
           } else if (label.toLowerCase().includes('description')) {
-            result.description = String(value);
+            result.description = value;
           } else if (label.toLowerCase().includes('type')) {
-            result.type = String(value);
+            result.type = value;
           } else if (label.toLowerCase().includes('language')) {
-            result.language = String(value);
+            result.language = value;
           }
         }
       }
@@ -112,31 +103,23 @@ export class ItemsClient {
       range?: [number, number];
     }
   ): Promise<PageInfo[]> {
-    if (!ark) {
-      return [];
-    }
-    try {
-      const manifest = await this.iiifClient.parseManifest(ark);
-      let pages = manifest.pages;
+    const manifest = await this.iiifClient.parseManifest(ark);
+    let pages = manifest.pages;
 
-      // Apply filters
-      if (options?.range) {
-        const [start, end] = options.range;
-        pages = pages.filter((p) => p.page >= start && p.page <= end);
-      } else if (options?.page !== undefined) {
-        // Get single page
-        const page = pages.find((p) => p.page === options.page);
-        return page ? [page] : [];
-      } else if (options?.pageSize !== undefined) {
-        // Get first N pages
-        pages = pages.slice(0, options.pageSize);
-      }
-
-      return pages;
-    } catch (error) {
-      logger.error(`Error getting pages for ${ark}: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+    // Apply filters
+    if (options?.range) {
+      const [start, end] = options.range;
+      pages = pages.filter((p) => p.page >= start && p.page <= end);
+    } else if (options?.page !== undefined) {
+      // Get single page
+      const page = pages.find((p) => p.page === options.page);
+      return page ? [page] : [];
+    } else if (options?.pageSize !== undefined) {
+      // Get first N pages
+      pages = pages.slice(0, options.pageSize);
     }
+
+    return pages;
   }
 }
 

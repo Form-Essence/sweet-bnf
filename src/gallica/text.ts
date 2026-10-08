@@ -4,9 +4,11 @@
  */
 
 import { XMLParser } from 'fast-xml-parser';
-// Text client for retrieving OCR and text content
-import { HttpClient } from './client.js';
+import { GallicaError, HttpClient } from './client.js';
+import { normalizeArk } from './ark.js';
 import { logger } from '../logging.js';
+
+type OrderedNode = Record<string, unknown> & { ':@'?: Record<string, string> };
 
 /**
  * Text client for retrieving OCR and text content
@@ -21,151 +23,116 @@ export class TextClient {
   }
 
   /**
-   * Get page text in various formats
+   * Get page text. Both "plain" and "alto" return text extracted from the page's ALTO OCR:
+   * Gallica's .texteBrut endpoint now redirects automated clients to an anti-bot challenge.
+   * Returns null when the page has no OCR; throws GallicaError when Gallica cannot be reached.
    */
   async getPageText(
     ark: string,
     page: number,
     format: 'plain' | 'alto' | 'tei' = 'plain'
   ): Promise<string | null> {
-    try {
-      if (format === 'alto') {
-        return await this.getAltoText(ark, page);
-      } else if (format === 'tei') {
-        return await this.getTeiText(ark, page);
-      } else {
-        return await this.getPlainText(ark, page);
-      }
-    } catch (error) {
-      logger.debug(`Text not available for ${ark}, page ${page}: ${error instanceof Error ? error.message : String(error)}`);
+    if (format === 'tei') {
+      // TEI is not exposed per page by Gallica
       return null;
     }
+    return this.getAltoText(normalizeArk(ark), page);
   }
 
   /**
    * Get ALTO XML and extract text
    */
-  private async getAltoText(ark: string, page: number): Promise<string | null> {
+  private async getAltoText(arkId: string, page: number): Promise<string | null> {
+    const url = `${this.baseUrl}/RequestDigitalElement`;
+    const params = {
+      O: `ark:/12148/${arkId}`,
+      E: 'ALTO',
+      Deb: String(page),
+    };
+
+    let xmlBody: string;
     try {
-      // Extract ARK identifier
-      const arkId = ark.replace(/^ark:\/12148\//, '').replace(/^\/ark:\/12148\//, '');
-      
-      const url = `${this.baseUrl}/RequestDigitalElement`;
-      const params = {
-        O: `ark:/12148/${arkId}`,
-        E: 'ALTO',
-        Deb: String(page),
-      };
-
-      const xmlBody = await this.httpClient.getXml(url, params);
-      return this.parseAltoXml(xmlBody);
+      xmlBody = await this.httpClient.getXml(url, params);
     } catch (error) {
-      // ALTO not available, return null (not an error)
-      return null;
+      // Gallica answers with an error status when a document or page has no OCR
+      if (
+        error instanceof GallicaError &&
+        (error.kind === 'server_error' || error.kind === 'not_found' || error.kind === 'bad_request')
+      ) {
+        logger.debug(`No ALTO for ${arkId}, page ${page}: ${error.message}`);
+        return null;
+      }
+      throw error;
     }
-  }
 
-  /**
-   * Parse ALTO XML to extract text content
-   */
-  private parseAltoXml(xmlBody: string): string {
-    try {
-      const parser = new XMLParser({
-        ignoreAttributes: false,
-        attributeNamePrefix: '@_',
-        textNodeName: '#text',
-      });
-
-      const result = parser.parse(xmlBody);
-      
-      // Navigate ALTO structure
-      const alto = result.alto || result.ALTO;
-      if (!alto) {
-        return '';
-      }
-
-      const layout = alto.Layout || alto.layout;
-      if (!layout) {
-        return '';
-      }
-
-      const page = layout.Page || layout.page;
-      if (!page) {
-        return '';
-      }
-
-      const printSpace = page.PrintSpace || page.printSpace || page.PrintSpace;
-      if (!printSpace) {
-        return '';
-      }
-
-      // Extract text blocks
-      const textBlocks: string[] = [];
-      const textBlocksArray = printSpace.TextBlock || printSpace.textBlock || [];
-      const blocks = Array.isArray(textBlocksArray) ? textBlocksArray : textBlocksArray ? [textBlocksArray] : [];
-
-      for (const block of blocks) {
-        const textLines = block.TextLine || block.textLine || [];
-        const lines = Array.isArray(textLines) ? textLines : textLines ? [textLines] : [];
-
-        for (const line of lines) {
-          const strings = line.String || line.string || [];
-          const stringArray = Array.isArray(strings) ? strings : strings ? [strings] : [];
-
-          const lineText = stringArray
-            .map((s: unknown) => {
-              if (typeof s === 'string') return s;
-              if (s && typeof s === 'object' && '#text' in s) return String(s['#text']);
-              if (s && typeof s === 'object' && '@_CONTENT' in s) return String(s['@_CONTENT']);
-              return String(s);
-            })
-            .filter((t: string) => t.trim().length > 0)
-            .join(' ');
-
-          if (lineText.trim()) {
-            textBlocks.push(lineText.trim());
-          }
-        }
-      }
-
-      return textBlocks.join('\n');
-    } catch (error) {
-      logger.warn(`Error parsing ALTO XML: ${error instanceof Error ? error.message : String(error)}`);
-      return '';
-    }
-  }
-
-  /**
-   * Get plain text (fallback method)
-   */
-  private async getPlainText(ark: string, _page: number): Promise<string | null> {
-    try {
-      // Extract ARK identifier
-      const arkId = ark.replace(/^ark:\/12148\//, '').replace(/^\/ark:\/12148\//, '');
-      
-      // Try plain text endpoint
-      const url = `${this.baseUrl}/ark:/12148/${arkId}.texteBrut`;
-      const text = await this.httpClient.get(url);
-      
-      if (text.statusCode === 200 && text.body.trim().length > 0) {
-        // If we have page-specific text, extract relevant portion
-        // For now, return full text (page extraction would require parsing)
-        return text.body;
-      }
-      
-      return null;
-    } catch (error) {
-      return null;
-    }
-  }
-
-  /**
-   * Get TEI text (if available)
-   */
-  private async getTeiText(_ark: string, _page: number): Promise<string | null> {
-    // TEI format similar to ALTO but different structure
-    // For now, return null - can be implemented if needed
-    return null;
+    const text = parseAltoXml(xmlBody);
+    return text.length > 0 ? text : null;
   }
 }
 
+function tagName(node: OrderedNode): string | undefined {
+  return Object.keys(node).find((key) => key !== ':@');
+}
+
+function children(node: OrderedNode, tag: string): OrderedNode[] {
+  const value = node[tag];
+  return Array.isArray(value) ? (value as OrderedNode[]) : [];
+}
+
+function lineText(line: OrderedNode, lineTag: string): string {
+  const words: string[] = [];
+  for (const child of children(line, lineTag)) {
+    const tag = tagName(child);
+    if (tag?.replace(/^.*:/, '') !== 'String') continue;
+    const attrs = child[':@'] ?? {};
+    // Hyphenated words: first half carries the whole word in SUBS_CONTENT
+    if (attrs['@_SUBS_TYPE'] === 'HypPart2') continue;
+    const content = attrs['@_SUBS_TYPE'] === 'HypPart1' && attrs['@_SUBS_CONTENT']
+      ? attrs['@_SUBS_CONTENT']
+      : attrs['@_CONTENT'];
+    if (content && content.trim()) words.push(content.trim());
+  }
+  return words.join(' ');
+}
+
+/**
+ * Extract text from ALTO XML in reading order, one OCR line per output line and a
+ * blank line between text blocks. Text blocks nested in ComposedBlocks are included.
+ */
+export function parseAltoXml(xmlBody: string): string {
+  let tree: OrderedNode[];
+  try {
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      preserveOrder: true,
+      parseAttributeValue: false,
+      parseTagValue: false,
+    });
+    tree = parser.parse(xmlBody) as OrderedNode[];
+  } catch (error) {
+    logger.warn(`Error parsing ALTO XML: ${error instanceof Error ? error.message : String(error)}`);
+    return '';
+  }
+
+  const lines: string[] = [];
+  const walk = (nodes: OrderedNode[]) => {
+    for (const node of nodes) {
+      const tag = tagName(node);
+      if (!tag) continue;
+      const local = tag.replace(/^.*:/, '');
+      if (local === 'TextLine') {
+        const text = lineText(node, tag);
+        if (text) lines.push(text);
+      } else {
+        walk(children(node, tag));
+        if (local === 'TextBlock' && lines.length > 0 && lines[lines.length - 1] !== '') {
+          lines.push('');
+        }
+      }
+    }
+  };
+  walk(Array.isArray(tree) ? tree : []);
+
+  return lines.join('\n').trim();
+}

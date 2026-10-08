@@ -135,6 +135,7 @@ export interface ItemMetadata {
   language?: string;
   format?: string[];
   manifest_url?: string;
+  page_count?: number;
   gallica_url: string;
   available_formats: string[];
 }

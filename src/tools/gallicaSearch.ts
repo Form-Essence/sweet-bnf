@@ -5,17 +5,18 @@
 import { z } from 'zod';
 import { SearchAPI } from '../gallica/search.js';
 import { config } from '../config.js';
+import { boolArg, intArg, textArg } from './schemas.js';
 
 /**
  * Zod schema for search parameters
  */
 const searchParamsSchema = z.object({
-  max_results: z.number().int().positive().max(50).optional(),
-  start_record: z.number().int().positive().optional(),
+  max_results: intArg().positive().max(50).optional(),
+  start_record: intArg().positive().optional(),
 });
 
 const exactMatchSchema = searchParamsSchema.extend({
-  exact_match: z.boolean().optional(),
+  exact_match: boolArg().optional(),
 });
 
 /**
@@ -51,7 +52,7 @@ export function createSearchByTitleTool(searchApi: SearchAPI) {
       required: ['title'],
     },
     handler: async (args: unknown) => {
-      const parsed = exactMatchSchema.extend({ title: z.string() }).parse(args);
+      const parsed = exactMatchSchema.extend({ title: textArg() }).parse(args);
       return await searchApi.searchByTitle(
         parsed.title,
         parsed.exact_match ?? false,
@@ -95,7 +96,7 @@ export function createSearchByAuthorTool(searchApi: SearchAPI) {
       required: ['author'],
     },
     handler: async (args: unknown) => {
-      const parsed = exactMatchSchema.extend({ author: z.string() }).parse(args);
+      const parsed = exactMatchSchema.extend({ author: textArg() }).parse(args);
       return await searchApi.searchByAuthor(
         parsed.author,
         parsed.exact_match ?? false,
@@ -139,7 +140,7 @@ export function createSearchBySubjectTool(searchApi: SearchAPI) {
       required: ['subject'],
     },
     handler: async (args: unknown) => {
-      const parsed = exactMatchSchema.extend({ subject: z.string() }).parse(args);
+      const parsed = exactMatchSchema.extend({ subject: textArg() }).parse(args);
       return await searchApi.searchBySubject(
         parsed.subject,
         parsed.exact_match ?? false,
@@ -178,7 +179,7 @@ export function createSearchByDateTool(searchApi: SearchAPI) {
       required: ['date'],
     },
     handler: async (args: unknown) => {
-      const parsed = searchParamsSchema.extend({ date: z.string() }).parse(args);
+      const parsed = searchParamsSchema.extend({ date: textArg() }).parse(args);
       return await searchApi.searchByDate(
         parsed.date,
         parsed.max_results ?? config.defaultMaxRecords,
@@ -216,7 +217,7 @@ export function createSearchByDocumentTypeTool(searchApi: SearchAPI) {
       required: ['doc_type'],
     },
     handler: async (args: unknown) => {
-      const parsed = searchParamsSchema.extend({ doc_type: z.string() }).parse(args);
+      const parsed = searchParamsSchema.extend({ doc_type: textArg() }).parse(args);
       return await searchApi.searchByDocumentType(
         parsed.doc_type,
         parsed.max_results ?? config.defaultMaxRecords,
@@ -254,7 +255,7 @@ export function createAdvancedSearchTool(searchApi: SearchAPI) {
       required: ['query'],
     },
     handler: async (args: unknown) => {
-      const parsed = searchParamsSchema.extend({ query: z.string() }).parse(args);
+      const parsed = searchParamsSchema.extend({ query: textArg() }).parse(args);
       return await searchApi.advancedSearch(
         parsed.query,
         parsed.max_results ?? config.defaultMaxRecords,
@@ -292,7 +293,7 @@ export function createNaturalLanguageSearchTool(searchApi: SearchAPI) {
       required: ['query'],
     },
     handler: async (args: unknown) => {
-      const parsed = searchParamsSchema.extend({ query: z.string() }).parse(args);
+      const parsed = searchParamsSchema.extend({ query: textArg() }).parse(args);
       return await searchApi.naturalLanguageSearch(
         parsed.query,
         parsed.max_results ?? config.defaultMaxRecords,

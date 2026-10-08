@@ -297,7 +297,7 @@ Retrieve OCR/text content for a page.
 **Parameters:**
 - `ark` (string, required): ARK identifier
 - `page` (number, required): Page number
-- `format` (string, optional): Text format ("plain", "alto", "tei")
+- `format` (string, optional): "plain" (default) or "alto" — both return plain text extracted from the page's ALTO OCR. "tei" is not available per page. Gallica's `.texteBrut` endpoint is not used: it redirects automated clients to an anti-bot challenge.
 
 **Returns:**
 - Text content (or null if not available)
@@ -371,8 +371,15 @@ Generate research reports in a sequential, step-by-step manner.
 - `GALLICA_BASE_URL` - Base URL for Gallica API (default: `https://gallica.bnf.fr`)
 - `GALLICA_SRU_URL` - SRU search endpoint (default: `https://gallica.bnf.fr/SRU`)
 - `LOG_LEVEL` - Logging level: `error`, `warn`, `info`, `debug` (default: `info`)
-- `HTTP_TIMEOUT` - HTTP request timeout in milliseconds (default: 30000)
-- `HTTP_RETRIES` - Maximum number of retry attempts (default: 3)
+- `HTTP_TIMEOUT` - Timeout per HTTP attempt in milliseconds (default: 20000)
+- `HTTP_RETRIES` - Retries for transient failures only: network errors, timeouts, 429, 502-504 (default: 1)
+- `HTTP_DEADLINE` - Total time budget per Gallica call, including queueing and retries, in ms (default: 45000)
+- `GALLICA_MIN_INTERVAL_MS` - Minimum spacing between requests to Gallica; requests are sent one at a time (default: 1000)
+- `GALLICA_CACHE_TTL_MS` - How long successful Gallica responses are cached in memory (default: 600000)
+
+> Gallica blocks IP addresses that send bursts of requests (first TCP resets, then
+> `403 Access Denied`). Keep the request interval at 1s or more, especially on shared
+> hosting such as Vercel. Throttling and caching are per server instance.
 - `DEFAULT_MAX_RECORDS` - Default maximum search results (default: 10)
 - `DEFAULT_START_RECORD` - Default starting record for pagination (default: 1)
 
